@@ -1,27 +1,21 @@
 /*
     FreeRTOS V9.0.0 - Copyright (C) 2016 Real Time Engineers Ltd.
     All rights reserved
-
     VISIT http://www.FreeRTOS.org TO ENSURE YOU ARE USING THE LATEST VERSION.
-
     This file is part of the FreeRTOS distribution.
-
     FreeRTOS is free software; you can redistribute it and/or modify it under
     the terms of the GNU General Public License (version 2) as published by the
     Free Software Foundation >>>> AND MODIFIED BY <<<< the FreeRTOS exception.
-
     ***************************************************************************
     >>!   NOTE: The modification to the GPL is included to allow you to     !<<
     >>!   distribute a combined work that includes FreeRTOS without being   !<<
     >>!   obliged to provide the source code for proprietary components     !<<
     >>!   outside of the FreeRTOS kernel.                                   !<<
     ***************************************************************************
-
     FreeRTOS is distributed in the hope that it will be useful, but WITHOUT ANY
     WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
     FOR A PARTICULAR PURPOSE.  Full license text is available on the following
     link: http://www.freertos.org/a00114.html
-
     ***************************************************************************
      *                                                                       *
      *    FreeRTOS provides completely free yet professionally developed,    *
@@ -35,35 +29,27 @@
      *    http://www.FreeRTOS.org/Documentation                              *
      *                                                                       *
     ***************************************************************************
-
     http://www.FreeRTOS.org/FAQHelp.html - Having a problem?  Start by reading
     the FAQ page "My application does not run, what could be wwrong?".  Have you
     defined configASSERT()?
-
     http://www.FreeRTOS.org/support - In return for receiving this top quality
     embedded software for free we request you assist our global community by
     participating in the support forum.
-
     http://www.FreeRTOS.org/training - Investing in training allows your team to
     be as productive as possible as early as possible.  Now you can receive
     FreeRTOS training directly from Richard Barry, CEO of Real Time Engineers
     Ltd, and the world's leading authority on the world's leading RTOS.
-
     http://www.FreeRTOS.org/plus - A selection of FreeRTOS ecosystem products,
     including FreeRTOS+Trace - an indispensable productivity tool, a DOS
     compatible FAT file system, and our tiny thread aware UDP/IP stack.
-
     http://www.FreeRTOS.org/labs - Where new FreeRTOS products go to incubate.
     Come and try FreeRTOS+TCP, our new open source TCP/IP stack for FreeRTOS.
-
     http://www.OpenRTOS.com - Real Time Engineers ltd. license FreeRTOS to High
     Integrity Systems ltd. to sell under the OpenRTOS brand.  Low cost OpenRTOS
     licenses offer ticketed support, indemnification and commercial middleware.
-
     http://www.SafeRTOS.com - High Integrity Systems also provide a safety
     engineered and independently SIL3 certified version for use in safety and
     mission critical applications that require provable dependability.
-
     1 tab == 4 spaces!
 */
 
@@ -73,22 +59,17 @@ FreeRTOS is a market leading RTOS from Real Time Engineers Ltd. that supports
 developed, strictly quality controlled, robust, supported, and free to use in
 commercial products without any requirement to expose your proprietary source
 code.
-
 This simple FreeRTOS demo does not make use of any IO ports, so will execute on
 any Cortex-M3 of Cortex-M4 hardware.  Look for TODO markers in the code for
 locations that may require tailoring to, for example, include a manufacturer
 specific header file.
-
 This is a starter project, so only a subset of the RTOS features are
 demonstrated.  Ample source comments are provided, along with web links to
 relevant pages on the http://www.FreeRTOS.org site.
-
 Here is a description of the project's functionality:
-
 The main() Function:
 main() creates the tasks and software timers described in this section, before
 starting the scheduler.
-
 The Queue Send Task:
 The queue send task is implemented by the prvQueueSendTask() function.
 The task uses the FreeRTOS vTaskDelayUntil() and xQueueSend() API functions to
@@ -96,7 +77,6 @@ periodically send the number 100 on a queue.  The period is set to 200ms.  See
 the comments in the function for more details.
 http://www.freertos.org/vtaskdelayuntil.html
 http://www.freertos.org/a00117.html
-
 The Queue Receive Task:
 The queue receive task is implemented by the prvQueueReceiveTask() function.
 The task uses the FreeRTOS xQueueReceive() API function to receive values from
@@ -105,30 +85,25 @@ receive task increments the ulCountOfItemsReceivedOnQueue variable each time it
 receives the value 100.  Therefore, as values are sent to the queue every 200ms,
 the value of ulCountOfItemsReceivedOnQueue will increase by 5 every second.
 http://www.freertos.org/a00118.html
-
 An example software timer:
 A software timer is created with an auto reloading period of 1000ms.  The
 timer's callback function increments the ulCountOfTimerCallbackExecutions
 variable each time it is called.  Therefore the value of
 ulCountOfTimerCallbackExecutions will count seconds.
 http://www.freertos.org/RTOS-software-timer.html
-
 The FreeRTOS RTOS tick hook (or callback) function:
 The tick hook function executes in the context of the FreeRTOS tick interrupt.
 The function 'gives' a semaphore every 500th time it executes.  The semaphore
 is used to synchronise with the event semaphore task, which is described next.
-
 The event semaphore task:
 The event semaphore task uses the FreeRTOS xSemaphoreTake() API function to
 wait for the semaphore that is given by the RTOS tick hook function.  The task
 increments the ulCountOfReceivedSemaphores variable each time the semaphore is
 received.  As the semaphore is given every 500ms (assuming a tick frequency of
 1KHz), the value of ulCountOfReceivedSemaphores will increase by 2 each second.
-
 The idle hook (or callback) function:
 The idle hook function queries the amount of free FreeRTOS heap space available.
 See vApplicationIdleHook().
-
 The malloc failed and stack overflow hook (or callback) functions:
 These two hook functions are provided as examples, but do not contain any
 functionality.
@@ -186,10 +161,10 @@ static void hardwareInit( void );
  * this file.
  */
 static void Manager_Task( void *pvParameters );
-static void Blue_LED_Controller_Task( void *pvParameters );
-static void Green_LED_Controller_Task( void *pvParameters );
-static void Red_LED_Controller_Task( void *pvParameters );
-static void Amber_LED_Controller_Task( void *pvParameters );
+static void Traffic_Task( void *pvParameters );
+void shiftClockPointer(void);
+void addOne(void);
+void addZero(void);
 
 xQueueHandle xQueue_handle = 0;
 
@@ -199,11 +174,7 @@ xQueueHandle xQueue_handle = 0;
 int main(void)
 {
 
-	/* Initialize LEDs */
-	STM_EVAL_LEDInit(amber_led);
-	STM_EVAL_LEDInit(green_led);
-	STM_EVAL_LEDInit(red_led);
-	STM_EVAL_LEDInit(blue_led);
+
 
 	/* Configure the system ready to run the demo.  The clock configuration
 	can be done here if it was not done before main() was called. */
@@ -219,10 +190,7 @@ int main(void)
 	vQueueAddToRegistry( xQueue_handle, "MainQueue" );
 
 	xTaskCreate( Manager_Task, "Manager", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate( Blue_LED_Controller_Task, "Blue_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate( Red_LED_Controller_Task, "Red_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate( Green_LED_Controller_Task, "Green_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate( Amber_LED_Controller_Task, "Amber_LED", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate(Traffic_Task, "Traffic", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
 	/* Start the tasks and timer running. */
 	vTaskStartScheduler();
@@ -232,48 +200,47 @@ int main(void)
 
 
 /*-----------------------------------------------------------*/
-
+int arr[] = {1,1,1,1,1,0,0,0,0,1,1,0,0,1,0,1,0,1,0};
+int count = 0;
 static void Manager_Task( void *pvParameters )
 {
-	uint16_t tx_data = amber;
+	uint16_t tx_data = 0;
+
+	ADC_SoftwareStartConv(ADC1);
+
 
 
 	while(1)
 	{
-		printf("Waiting for ADC Conversion\n");
-		ADC_SoftwareStartConv(ADC1);
+
 		while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC));
 		int value = ADC_GetConversionValue(ADC1);
-		printf("%d\n", value);
+		printf("%i\n", value);
 
-//		if(tx_data == amber)
-//			STM_EVAL_LEDOn(amber_led);
-//		if(tx_data == green)
-//			STM_EVAL_LEDOn(green_led);
-//		if(tx_data == red)
-//			STM_EVAL_LEDOn(red_led);
-//		if(tx_data == blue)
-//			STM_EVAL_LEDOn(blue_led);
-//
-//		if( xQueueSend(xQueue_handle,&tx_data,1000))
-//		{
-//			printf("Manager: %u ON!\n", tx_data);
-//			if(++tx_data == 4){
-//				tx_data = 0;
-//				GPIO_SetBits(GPIOC, TRAFFIC_RED_LIGHT);
-//			}
-//			vTaskDelay(1000);
-//		}
-//		else
-//		{
-//			printf("Manager Failed!\n");
-//		}
+		if( xQueueSend(xQueue_handle,&tx_data,1000))
+		{
+
+			if(++tx_data == 4){
+				tx_data = 0;
+				GPIO_SetBits(GPIOC, TRAFFIC_RED_LIGHT);
+			}
+			vTaskDelay(1000);
+		}
+		else
+		{
+			printf("Manager Failed!\n");
+		}
+
+		for(int i = 0; i < 20; i++){
+			if (arr[i]) addOne();
+			else addZero();
+		}
 	}
 }
 
 /*-----------------------------------------------------------*/
 
-static void Blue_LED_Controller_Task( void *pvParameters )
+static void Traffic_Task( void *pvParameters )
 {
 	uint16_t rx_data;
 	while(1)
@@ -283,15 +250,15 @@ static void Blue_LED_Controller_Task( void *pvParameters )
 			if(rx_data == blue)
 			{
 				vTaskDelay(250);
-				STM_EVAL_LEDOff(blue_led);
-				printf("Blue Off.\n");
 				GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
+
+
 			}
 			else
 			{
 				if( xQueueSend(xQueue_handle,&rx_data,1000))
 					{
-						printf("BlueTask GRP (%u).\n", rx_data); // Got wwrong Package
+
 						vTaskDelay(500);
 					}
 			}
@@ -300,89 +267,28 @@ static void Blue_LED_Controller_Task( void *pvParameters )
 }
 
 
-/*-----------------------------------------------------------*/
+void addOne(){
 
-static void Green_LED_Controller_Task( void *pvParameters )
-{
-	uint16_t rx_data;
-	while(1)
-	{
-		if(xQueueReceive(xQueue_handle, &rx_data, 500))
-		{
-			if(rx_data == green)
-			{
-				vTaskDelay(250);
-				STM_EVAL_LEDOff(green_led);
-				printf("Green Off.\n");
-			}
-			else
-			{
-				if( xQueueSend(xQueue_handle,&rx_data,1000))
-					{
-						printf("GreenTask GRP (%u).\n", rx_data); // Got wrong Package
-						vTaskDelay(500);
-					}
-			}
-		}
-	}
+	GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
+	GPIO_SetBits(GPIOC, SHIFT_REGISTER_DATA); // turn light on
+	shiftClockPointer();
+	printf("added traffic\n");
 }
 
-/*-----------------------------------------------------------*/
+void addZero(){
 
-static void Red_LED_Controller_Task( void *pvParameters )
-{
-	uint16_t rx_data;
-	while(1)
-	{
-		if(xQueueReceive(xQueue_handle, &rx_data, 500))
-		{
-			if(rx_data == red)
-			{
-				vTaskDelay(250);
-				STM_EVAL_LEDOff(red_led);
-				printf("Red off.\n");
-			}
-			else
-			{
-				if( xQueueSend(xQueue_handle,&rx_data,1000))
-					{
-						printf("RedTask GRP (%u).\n", rx_data); // Got wrong Package
-						vTaskDelay(500);
-					}
-			}
-		}
-	}
+	GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
+	GPIO_ResetBits(GPIOC, SHIFT_REGISTER_DATA); // turn light off
+	shiftClockPointer();
+	printf("move traffic\n");
+
 }
 
-
-/*-----------------------------------------------------------*/
-
-static void Amber_LED_Controller_Task( void *pvParameters )
-{
-	uint16_t rx_data;
-	while(1)
-	{
-		if(xQueueReceive(xQueue_handle, &rx_data, 500))
-		{
-			if(rx_data == amber)
-			{
-				vTaskDelay(250);
-				STM_EVAL_LEDOff(amber_led);
-				printf("Amber Off.\n");
-
-			}
-			else
-			{
-				if( xQueueSend(xQueue_handle,&rx_data,1000))
-					{
-						printf("AmberTask GRP (%u).\n", rx_data); // Got wrong Package
-						vTaskDelay(500);
-					}
-			}
-		}
-	}
+void shiftClockPointer(){
+	GPIO_SetBits(GPIOC, SHIFT_REGISTER_CLK);
+	GPIO_ResetBits(GPIOC, SHIFT_REGISTER_CLK);
+	GPIO_SetBits(GPIOC, SHIFT_REGISTER_CLK);
 }
-
 
 /*-----------------------------------------------------------*/
 
@@ -390,7 +296,6 @@ void vApplicationMallocFailedHook( void )
 {
 	/* The malloc failed hook is enabled by setting
 	configUSE_MALLOC_FAILED_HOOK to 1 in FreeRTOSConfig.h.
-
 	Called if a call to pvPortMalloc() fails because there is insufficient
 	free memory available in the FreeRTOS heap.  pvPortMalloc() is called
 	internally by FreeRTOS API functions that create tasks, queues, software 
@@ -420,7 +325,6 @@ volatile size_t xFreeStackSpace;
 
 	/* The idle task hook is enabled by setting configUSE_IDLE_HOOK to 1 in
 	FreeRTOSConfig.h.
-
 	This function is called on each cycle of the idle task.  In this case it
 	does nothing useful, other than report the amount of FreeRTOS heap that
 	remains unallocated. */
@@ -442,8 +346,7 @@ static void hardwareInit( void )
 	http://www.freertos.org/RTOS-Cortex-M3-M4.html */
 	NVIC_SetPriorityGrouping( 0 );
 
-	/* TODO: Setup the clocks, etc. here, if they were not configured before
-	main() was called. */
+
 
 	// Enable clocks for GPIOC
 	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
@@ -461,12 +364,12 @@ static void hardwareInit( void )
 
 	GPIO_Init(GPIOC, &TrafficLightGPIOStruct);
 
-	// potentiameter GPIO setup. mode to anologue input
+	// potentiometer GPIO setup. mode to anologue input
 
 	GPIO_InitTypeDef PotGPIOStruct;
 
 	PotGPIOStruct.GPIO_Mode = GPIO_Mode_AN;
-//	PotGPIOStruct.GPIO_OType = GPIO_OType_OD;
+	PotGPIOStruct.GPIO_OType = GPIO_OType_OD;
 	PotGPIOStruct.GPIO_Pin = POT_INPUT;
 	PotGPIOStruct.GPIO_PuPd = GPIO_PuPd_NOPULL;
 //	PotGPIOStruct.GPIO_Speed = GPIO_Speed_2MHz;
@@ -477,23 +380,18 @@ static void hardwareInit( void )
 	// ADC setup
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
 
-	ADC_DeInit();
 	ADC_InitTypeDef ADCInitStruct;
-
 	ADCInitStruct.ADC_Resolution = ADC_Resolution_12b;
 	ADCInitStruct.ADC_ScanConvMode = DISABLE;
 	ADCInitStruct.ADC_ContinuousConvMode = ENABLE;
 	ADCInitStruct.ADC_ExternalTrigConv = ADC_ExternalTrigConvEdge_None;
-	ADCInitStruct.ADC_ExternalTrigConv=ADC_ExternalTrigConv_T1_CC1;
 	ADCInitStruct.ADC_DataAlign = ADC_DataAlign_Right;
 	ADCInitStruct.ADC_ExternalTrigConvEdge=ADC_ExternalTrigConvEdge_None;
-	ADCInitStruct.ADC_NbrOfConversion=2;
 
 	ADC_Init(ADC1, &ADCInitStruct);
 	ADC_Cmd(ADC1, ENABLE);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_11, 1, ADC_SampleTime_144Cycles);
+	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_144Cycles);
 
 
 
 }
-
