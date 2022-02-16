@@ -148,6 +148,7 @@ functionality.
 #define SHIFT_REGISTER_DATA GPIO_Pin_6
 
 #define POT_INPUT GPIO_Pin_3
+#define TRAFFIC_ARRAY_LEN 19
 
 /*
  * TODO: Implement this function for any hardware specific clock configuration
@@ -163,8 +164,9 @@ static void hardwareInit( void );
 static void Manager_Task( void *pvParameters );
 static void Traffic_Task( void *pvParameters );
 void shiftClockPointer(void);
-void addOne(void);
-void addZero(void);
+void moveTrafficRight(int cars_array[], int new_car);
+void updateTraffic(int cars[]);
+int updateFlow(int *flow_spaces, int spaces_to_add);
 
 xQueueHandle xQueue_handle = 0;
 
@@ -200,30 +202,41 @@ int main(void)
 
 
 /*-----------------------------------------------------------*/
-int arr[] = {1,1,1,1,1,0,0,0,0,1,1,0,0,1,0,1,0,1,0};
-int count = 0;
+
 static void Manager_Task( void *pvParameters )
 {
-	uint16_t tx_data = 0;
+	uint16_t next_car = 0;
 
 	ADC_SoftwareStartConv(ADC1);
 
 
-
+	int flow_spaces = 3; // keeps track of the current num spaces between newly added cars
 	while(1)
 	{
 
 		while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC));
-		int value = ADC_GetConversionValue(ADC1);
-		printf("%i\n", value);
+		int flow = ADC_GetConversionValue(ADC1);
+		printf("%i\n", flow);
 
-		if( xQueueSend(xQueue_handle,&tx_data,1000))
+		if(flow < 1000){ // LOW
+			next_car = updateFlow(&flow_spaces, 3);
+		}
+		else if((flow >= 1000) && (flow < 2000)){ //Med
+			next_car = updateFlow(&flow_spaces, 2);
+		}
+		else if((flow >= 2000) && (flow < 3000)){ //Med-High
+			next_car = updateFlow(&flow_spaces, 1);
+		}
+		else if(flow >= 3000){ //High
+			next_car = updateFlow(&flow_spaces, 0);
+		}
+
+
+		printf("next car: %d\n", next_car);
+
+		if( xQueueSend(xQueue_handle,&next_car,1000))
 		{
 
-			if(++tx_data == 4){
-				tx_data = 0;
-				GPIO_SetBits(GPIOC, TRAFFIC_RED_LIGHT);
-			}
 			vTaskDelay(1000);
 		}
 		else
@@ -231,54 +244,73 @@ static void Manager_Task( void *pvParameters )
 			printf("Manager Failed!\n");
 		}
 
-		for(int i = 0; i < 20; i++){
-			if (arr[i]) addOne();
-			else addZero();
-		}
+
+
+
 	}
 }
-
 /*-----------------------------------------------------------*/
 
-static void Traffic_Task( void *pvParameters )
+static void Traffic_Task( void *pvParameters ) // waits for new cars to be sent in the queue and updates the display
 {
-	uint16_t rx_data;
+	int cars_array[TRAFFIC_ARRAY_LEN + 1] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+
+	uint16_t next_car;
 	while(1)
 	{
-		if(xQueueReceive(xQueue_handle, &rx_data, 500))
+		if(xQueueReceive(xQueue_handle, &next_car, 500))
 		{
-			if(rx_data == blue)
-			{
-				vTaskDelay(250);
-				GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
+			vTaskDelay(250);
+			printf("adding new car: %d\n", next_car);
+			moveTrafficRight(cars_array, next_car);
+		}
+		updateTraffic(cars_array);
 
 
-			}
-			else
-			{
-				if( xQueueSend(xQueue_handle,&rx_data,1000))
-					{
+	}
+}
 
-						vTaskDelay(500);
-					}
-			}
+int updateFlow(int *flow_spaces, int spaces_to_add){ // current number of spaces between cars and the number of
+	// spaces there needs to be between cars at this flow level
+	uint16_t next_car;
+	if(*flow_spaces < spaces_to_add){
+		next_car = 0;
+		*flow_spaces += 1;
+	}
+	else{
+		next_car = 1;
+		*flow_spaces = 0;
+	}
+	return next_car;
+
+}
+
+void moveTrafficRight(int cars_array[], int new_car){ // rotate array right and add new car to first index
+	for(int i = TRAFFIC_ARRAY_LEN; i > 0 ; i--){
+		cars_array[i]=cars_array[i-1];
+	}
+	cars_array[0] = new_car;
+}
+
+void updateTraffic(int cars[]){
+	for(int i = 0; i <= TRAFFIC_ARRAY_LEN; i++){
+		if (cars[TRAFFIC_ARRAY_LEN-i]){ // add car
+			GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
+			GPIO_SetBits(GPIOC, SHIFT_REGISTER_DATA); // push in "on" car
+			shiftClockPointer(); // shift right
+		}
+		else { // add no car
+			GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
+			GPIO_ResetBits(GPIOC, SHIFT_REGISTER_DATA); // push in "off" car
+			shiftClockPointer(); // shift right
 		}
 	}
 }
 
-
-void addOne(){
-
-	GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
-	GPIO_SetBits(GPIOC, SHIFT_REGISTER_DATA); // turn light on
-	shiftClockPointer();
-	printf("added traffic\n");
-}
 
 void addZero(){
 
-	GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
-	GPIO_ResetBits(GPIOC, SHIFT_REGISTER_DATA); // turn light off
+	 // turn light off
 	shiftClockPointer();
 	printf("move traffic\n");
 
@@ -395,3 +427,35 @@ static void hardwareInit( void )
 
 
 }
+
+
+
+//static void Traffic_Task( void *pvParameters )
+//{
+//	int traffic_array[20] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+//	int count = 0;
+//	uint16_t rx_data;
+//	while(1)
+//	{
+//		if(xQueueReceive(xQueue_handle, &rx_data, 500))
+//		{
+//			if(rx_data == "RED")
+//			{
+//				vTaskDelay(250);
+//				print("RED ON\n");
+//				GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
+//
+//			}
+//			else
+//			{
+//				if( xQueueSend(xQueue_handle,&rx_data,1000))
+//					{
+//
+//						vTaskDelay(500);
+//					}
+//			}
+//		}
+//		updateTraffic();
+//
+//	}
+//}
