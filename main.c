@@ -129,15 +129,13 @@ functionality.
 /*-----------------------------------------------------------*/
 #define mainQUEUE_LENGTH 100
 
-#define amber  	0
-#define green  	1
-#define red  	2
-#define blue  	3
-
 #define amber_led	LED3
 #define green_led	LED4
 #define red_led		LED5
-#define blue_led	LED6
+
+#define GREEN_STATE	0
+#define AMBER_STATE	1
+#define RED_STATE	2
 
 #define TRAFFIC_RED_LIGHT		GPIO_Pin_0
 #define TRAFFIC_AMBER_LIGHT		GPIO_Pin_1
@@ -163,12 +161,18 @@ static void hardwareInit( void );
  */
 static void Manager_Task( void *pvParameters );
 static void Traffic_Task( void *pvParameters );
+static void Traffic_Light_State_Task( void *pvParameters );
 void shiftClockPointer(void);
-void moveTrafficRight(int cars_array[], int new_car);
+void moveTrafficRight(int cars_array[], int new_car, int state);
 void updateTraffic(int cars[]);
 int updateFlow(int *flow_spaces, int spaces_to_add);
+void vCallbackFunction( TimerHandle_t xTimer );
 
-xQueueHandle xQueue_handle = 0;
+xQueueHandle xQueue_nextCar = 0;
+xQueueHandle xQueue_flowRate = 0;
+xQueueHandle xQueue_lightState = 0;
+xQueueHandle xQueue_timerInfo = 0;
+TimerHandle_t xTimer;
 
 
 /*-----------------------------------------------------------*/
@@ -176,23 +180,44 @@ xQueueHandle xQueue_handle = 0;
 int main(void)
 {
 
-
-
 	/* Configure the system ready to run the demo.  The clock configuration
 	can be done here if it was not done before main() was called. */
 	hardwareInit();
 
 
+	// timer init
+	xTimer = xTimerCreate("Traffic Timer", pdMS_TO_TICKS(1000), pdFALSE, (void *)0, vCallbackFunction);
+
+
 	/* Create the queue used by the queue send and queue receive tasks.
 	http://www.freertos.org/a00116.html */
-	xQueue_handle = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
+	xQueue_nextCar = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
 							sizeof( uint16_t ) );	/* The size of each item the queue holds. */
 
-	/* Add to the registry, for the benefit of kernel aware debugging. */
-	vQueueAddToRegistry( xQueue_handle, "MainQueue" );
+	xQueue_flowRate = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
+								sizeof( uint16_t ) );	/* The size of each item the queue holds. */
 
-	xTaskCreate( Manager_Task, "Manager", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
+	xQueue_lightState = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
+								sizeof( uint16_t ) );	/* The size of each item the queue holds. */
+
+	xQueue_timerInfo = xQueueCreate( 	mainQUEUE_LENGTH,		/* The number of items the queue can hold. */
+									sizeof( uint16_t ));
+
+	/* Add to the registry, for the benefit of kernel aware debugging. */
+	vQueueAddToRegistry( xQueue_nextCar, "nextCarQueue" );
+	vQueueAddToRegistry( xQueue_flowRate, "flowRateQueue" );
+	vQueueAddToRegistry( xQueue_lightState, "nextLightQueue" );
+	vQueueAddToRegistry( xQueue_timerInfo, "nextTimerInfoQueue" );
+
+	xTaskCreate(Manager_Task, "Manager", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate(Traffic_Task, "Traffic", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate(Traffic_Light_State_Task, "Light State", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+
+	int nextLight = GREEN_STATE;
+	if( !xQueueSend(xQueue_lightState ,&nextLight,500) )
+	{
+		printf("Error sending next light\n");
+	}
 
 	/* Start the tasks and timer running. */
 	vTaskStartScheduler();
@@ -201,16 +226,24 @@ int main(void)
 }
 
 
+
+
 /*-----------------------------------------------------------*/
 
-static void Manager_Task( void *pvParameters )
+static void Manager_Task( void *pvParameters ) // reading traffic rate task
 {
 	uint16_t next_car = 0;
 
 	ADC_SoftwareStartConv(ADC1);
 
+	GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
+	GPIO_ResetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
+	GPIO_SetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
 
+
+	printf("Starting...\n");
 	int flow_spaces = 3; // keeps track of the current num spaces between newly added cars
+	int flow_rate = 1;
 	while(1)
 	{
 
@@ -220,55 +253,156 @@ static void Manager_Task( void *pvParameters )
 
 		if(flow < 1000){ // LOW
 			next_car = updateFlow(&flow_spaces, 3);
+			flow_rate = 1;
 		}
 		else if((flow >= 1000) && (flow < 2000)){ //Med
 			next_car = updateFlow(&flow_spaces, 2);
+			flow_rate = 2;
 		}
 		else if((flow >= 2000) && (flow < 3000)){ //Med-High
 			next_car = updateFlow(&flow_spaces, 1);
+			flow_rate = 3;
 		}
 		else if(flow >= 3000){ //High
 			next_car = updateFlow(&flow_spaces, 0);
+			flow_rate = 4;
 		}
-
 
 		printf("next car: %d\n", next_car);
 
-		if( xQueueSend(xQueue_handle,&next_car,1000))
-		{
 
+		if( xQueueSend(xQueue_flowRate, &flow_rate,1000) && xQueueSend(xQueue_nextCar,&next_car,1000))
+		{
 			vTaskDelay(1000);
 		}
 		else
 		{
 			printf("Manager Failed!\n");
 		}
-
+		printf("Man task\n");
 
 
 
 	}
 }
+
+static void Traffic_Light_State_Task( void *pvParameters ) // reading traffic rate task
+{
+
+	uint16_t flow_rate;
+	uint16_t curr_light;
+
+	while(1)
+	{
+		if (xQueueReceive(xQueue_flowRate, &flow_rate, 100)){
+			if(xQueueReceive(xQueue_lightState, &curr_light, 250))
+			{
+
+				printf("flow level received: %d\n", flow_rate);
+				printf("curr light received: %d\n", curr_light);
+				int timer_amount;
+
+
+				float base = 2000;
+				float inverse = (float) (1.0 / (float) flow_rate);
+				int GREEN_TIME = flow_rate * base;
+				int AMBER_TIME = base;
+				int RED_TIME =  inverse  * base * 4;
+				printf("REEEEED: %d", RED_TIME );
+
+
+				if(curr_light == AMBER_STATE) timer_amount = AMBER_TIME;
+				else if(curr_light == GREEN_STATE) timer_amount = GREEN_TIME;
+				else if(curr_light == RED_STATE) timer_amount = RED_TIME;
+
+				printf("timer: %d\n, ", timer_amount);
+
+				if( xTimerChangePeriod( xTimer, pdMS_TO_TICKS(timer_amount), 100 ) != pdPASS ) {
+					printf("Failed to start timer\n");
+				}
+				else{
+					printf("Start timer for %d\n", timer_amount);
+				}
+
+				printf("SENDING: curr light state: %d, curr period: %d\n", curr_light,timer_amount);
+
+				if( xQueueSend(xQueue_timerInfo, &curr_light ,1000) )
+				{
+//					vTaskDelay(250);
+				}
+			}
+
+		}
+		printf("TLS task\n");
+		vTaskDelay(250);
+	}
+
+}
+
+
 /*-----------------------------------------------------------*/
 
-static void Traffic_Task( void *pvParameters ) // waits for new cars to be sent in the queue and updates the display
+static void Traffic_Task( void *pvParameters ) // waits for new cars to be sent in the queue and updates traffic display
 {
 	int cars_array[TRAFFIC_ARRAY_LEN + 1] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 	uint16_t next_car;
+	uint16_t current_state;
 	while(1)
 	{
-		if(xQueueReceive(xQueue_handle, &next_car, 500))
+		if( xQueueReceive(xQueue_nextCar, &next_car, 500) && xQueuePeek(xQueue_timerInfo, &current_state, 500)) // get next car from queue push by manager
 		{
-			vTaskDelay(250);
-			printf("adding new car: %d\n", next_car);
-			moveTrafficRight(cars_array, next_car);
+
+			moveTrafficRight(cars_array, next_car, current_state);
+
+
 		}
-		updateTraffic(cars_array);
-
-
+		updateTraffic(cars_array); // update display
+		vTaskDelay(500);
+		printf("Traffic task\n");
 	}
 }
+
+void vCallbackFunction( TimerHandle_t xTimer ){
+
+
+	uint16_t next_light;
+
+	if( xQueueReceive(xQueue_timerInfo, &next_light, 500) ) // get next car from queue push by manager
+	{
+		printf("TIMER received: curr light state: %d\n", next_light);
+
+
+		next_light = (next_light + 1) % 3;
+
+		if(next_light == RED_STATE){
+			GPIO_ResetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
+			GPIO_ResetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
+			GPIO_SetBits(GPIOC, TRAFFIC_RED_LIGHT);
+		}
+		else if(next_light == AMBER_STATE){
+			GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
+			GPIO_SetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
+			GPIO_ResetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
+		}
+		else{ // GREEN STATE
+			GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
+			GPIO_ResetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
+			GPIO_SetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
+		}
+
+
+		if( xQueueSend(xQueue_lightState, &next_light,1000) )
+		{
+			printf("Sending updated light state: %d\n", next_light);
+		}
+	}
+	printf("Timer callback \n");
+
+
+
+}
+
 
 int updateFlow(int *flow_spaces, int spaces_to_add){ // current number of spaces between cars and the number of
 	// spaces there needs to be between cars at this flow level
@@ -285,11 +419,32 @@ int updateFlow(int *flow_spaces, int spaces_to_add){ // current number of spaces
 
 }
 
-void moveTrafficRight(int cars_array[], int new_car){ // rotate array right and add new car to first index
-	for(int i = TRAFFIC_ARRAY_LEN; i > 0 ; i--){
-		cars_array[i]=cars_array[i-1];
+void moveTrafficRight(int cars_array[], int new_car, int current_state){ // rotate array right and add new car to first index
+	if(current_state == GREEN_STATE){
+		for(int i = TRAFFIC_ARRAY_LEN; i > 0 ; i--){
+			if (cars_array[i] == 0){
+				cars_array[i]=cars_array[i-1];
+				cars_array[i - 1] = 0;
+			}
+
+		}
+		cars_array[0] = new_car;
 	}
-	cars_array[0] = new_car;
+	else{
+		for(int i = 7; i > 0 ; i--){
+			cars_array[i]=cars_array[i-1];
+		}
+		cars_array[0] = new_car;
+		for(int i = TRAFFIC_ARRAY_LEN; i > 7 ; i--){
+			if(i == 8){
+				cars_array[i] = 0;
+				continue;
+			}
+			cars_array[i]=cars_array[i-1];
+		}
+
+	}
+
 }
 
 void updateTraffic(int cars[]){
@@ -321,6 +476,7 @@ void shiftClockPointer(){
 	GPIO_ResetBits(GPIOC, SHIFT_REGISTER_CLK);
 	GPIO_SetBits(GPIOC, SHIFT_REGISTER_CLK);
 }
+
 
 /*-----------------------------------------------------------*/
 
@@ -432,12 +588,12 @@ static void hardwareInit( void )
 
 //static void Traffic_Task( void *pvParameters )
 //{
-//	int traffic_array[20] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+//	int traffic_array[20] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}; // imagine these are cars, buses, mopeds, and cyclists ew
 //	int count = 0;
 //	uint16_t rx_data;
 //	while(1)
 //	{
-//		if(xQueueReceive(xQueue_handle, &rx_data, 500))
+//		if(xQueueReceive(xQueue_nextCar, &rx_data, 500))
 //		{
 //			if(rx_data == "RED")
 //			{
@@ -448,7 +604,7 @@ static void hardwareInit( void )
 //			}
 //			else
 //			{
-//				if( xQueueSend(xQueue_handle,&rx_data,1000))
+//				if( xQueueSend(xQueue_nextCar,&rx_data,1000))
 //					{
 //
 //						vTaskDelay(500);
