@@ -59,7 +59,7 @@ void vCallbackFunction( TimerHandle_t xTimer );
 xQueueHandle xQueue_nextCar = 0;
 xQueueHandle xQueue_flowRate = 0;
 xQueueHandle xQueue_lightState = 0;
-xQueueHandle xQueue_lightToUpdate = 0;
+xQueueHandle xQueue_updatedLight = 0;
 TimerHandle_t xTimer;
 
 /*-----------------------------------------------------------*/
@@ -79,21 +79,21 @@ int main(void)
 	/* Queue for passing the current state of the light (GREEN, AMBER, RED) */
 	xQueue_lightState = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
 	/* Queue for passing the light that needs to change to the timer Callback */
-	xQueue_lightToUpdate = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
+	xQueue_updatedLight = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
 
 	/* Add to the registry, for the benefit of kernel aware debugging. */
 	vQueueAddToRegistry( xQueue_nextCar, "nextCarQueue" );
 	vQueueAddToRegistry( xQueue_flowRate, "flowRateQueue" );
-	vQueueAddToRegistry( xQueue_lightState, "nextLightQueue" );
-	vQueueAddToRegistry( xQueue_lightToUpdate, "lightToUpdateQueue" );
+	vQueueAddToRegistry( xQueue_lightState, "lightStateQueue" );
+	vQueueAddToRegistry( xQueue_updatedLight, "updatedLightQueue" );
 
-	xTaskCreate(Manager_Task, "ManagerTask", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate(Traffic_Task, "TrafficTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate(Manager_Task, "ManagerTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
+	xTaskCreate(Traffic_Task, "TrafficTask", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
 	xTaskCreate(Traffic_Light_State_Task, "LightStateTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
 	/* Set the initial state of the light to GREEN */
 	int nextLight = GREEN_STATE;
-	if( !xQueueSend(xQueue_lightState,&nextLight,500))
+	if( !xQueueSend(xQueue_updatedLight,&nextLight,500))
 	{
 		printf("Error sending Initial light state\n");
 	}
@@ -167,17 +167,18 @@ static void Traffic_Light_State_Task( void *pvParameters )
 	while(1)
 	{
 		if (xQueueReceive(xQueue_flowRate, &flow_rate, 100)){
-			if(xQueueReceive(xQueue_lightState, &curr_light, 250))
+			if(xQueueReceive(xQueue_updatedLight, &curr_light, 250))
 			{
 
 				/* Determine length of time for each light state based on the current flow rate */
 				int timer_amount;
-				float base = 2000;
+				float base = 1000;
+				float offset = 2000;
 				float inverse = (float) (1.0 / (float) flow_rate);
 
-				int GREEN_TIME = flow_rate * base;
-				int AMBER_TIME = base;
-				int RED_TIME =  inverse * base * 5;
+				int GREEN_TIME = flow_rate * base + offset;
+				int AMBER_TIME = 2500;
+				int RED_TIME =  inverse * base * 5 + offset;
 
 				/* Change timer duration for the next time the light changes (timer ends) */
 				if(curr_light == AMBER_STATE) timer_amount = AMBER_TIME;
@@ -189,7 +190,7 @@ static void Traffic_Light_State_Task( void *pvParameters )
 				}
 
 				/* Send the current light state to the timer callback so that it can change it when the timer is up */
-				if( !xQueueSend(xQueue_lightToUpdate, &curr_light,1000) )
+				if( !xQueueSend(xQueue_lightState, &curr_light,1000) )
 				{
 					printf("Failed to send lightToUpdate to timer\n");
 				}
@@ -209,7 +210,7 @@ static void Traffic_Task( void *pvParameters ) //
 
 	while(1)
 	{
-		if( xQueueReceive(xQueue_nextCar, &next_car, 250) && xQueuePeek(xQueue_lightToUpdate, &current_light, 250)) // get next car from queue push by manager
+		if( xQueueReceive(xQueue_nextCar, &next_car, 250) && xQueuePeek(xQueue_lightState, &current_light, 250)) // get next car from queue push by manager
 		{
 			moveTrafficRight(cars_array, next_car, current_light);
 		}
@@ -224,7 +225,7 @@ void vCallbackFunction( TimerHandle_t xTimer )
 	uint16_t light_to_update;
 	uint16_t next_light;
 
-	if( xQueueReceive(xQueue_lightToUpdate, &light_to_update, 500) )
+	if( xQueueReceive(xQueue_lightState, &light_to_update, 500) )
 	{
 		/* GREEN -> AMBER -> RED -> GREEN -> AMBER -> ... */
 		next_light = (light_to_update + 1) % 3;
@@ -247,7 +248,7 @@ void vCallbackFunction( TimerHandle_t xTimer )
 		}
 
 		/* Send back the newly updated light state */
-		if( !xQueueSend(xQueue_lightState, &next_light,1000) )
+		if( !xQueueSend(xQueue_updatedLight, &next_light,1000) )
 		{
 			printf("Failed to send next_light to xQueue_lightState\n");
 		}
@@ -307,6 +308,7 @@ void updateTraffic(int cars[]){
 		// move shift register to next position
 		GPIO_ResetBits(GPIOC, SHIFT_REGISTER_CLK);
 		GPIO_SetBits(GPIOC, SHIFT_REGISTER_CLK);
+		GPIO_ResetBits(GPIOC, SHIFT_REGISTER_CLK);
 	}
 }
 
