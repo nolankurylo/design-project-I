@@ -47,14 +47,14 @@ static void hardwareInit( void );
  * The queue send and receive tasks as described in the comments at the top of
  * this file.
  */
-static void Manager_Task( void *pvParameters );
-static void Traffic_Task( void *pvParameters );
-static void Traffic_Light_State_Task( void *pvParameters );
-void shiftClockPointer(void);
-void moveTrafficRight(int cars_array[], int new_car, int state);
-void updateTraffic(int cars[]);
-int updateFlow(int t_mod);
-void vCallbackFunction( TimerHandle_t xTimer );
+static void Manager_Task( void );
+static void Traffic_Task( void );
+static void Traffic_Light_State_Task( void );
+void shiftClockPointer( void );
+void moveTrafficRight( int, int, int );
+void updateTraffic( int );
+int updateFlow( int );
+void vCallbackFunction( TimerHandle_t );
 
 xQueueHandle xQueue_nextCar = 0;
 xQueueHandle xQueue_flowRate = 0;
