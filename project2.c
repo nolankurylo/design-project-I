@@ -42,6 +42,7 @@ static void Deadline_Driven_Task_Generator1( void *pvParameters );
 static void Deadline_Driven_Scheduler( void *pvParameters );
 static void User_Defined_Task( void *pvParameters );
 
+
 struct dd_task {
 	TaskHandle_t t_handle;
 	uint32_t type; // PERIODIC or APERIODIC
@@ -58,7 +59,7 @@ struct dd_task_list {
     struct dd_task_list* next;
 };
 
-
+struct dd_task listDelete(activeHead, completed_task_id);
 void listInsert(struct dd_task_list* head, struct dd_task new_task, int sort_flag);
 void release_dd_task(TaskHandle_t, uint32_t, uint32_t, uint32_t, uint32_t);
 
@@ -140,15 +141,13 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 	overdueHead->next = NULL;
 
 	struct dd_task new_release_task;
+
 	uint32_t completed_task_id;
+	int CPUAvailable = 1; // initially free to run F-Tasks
 	while(1)
 	{
 
-		// Release new task if CPU available (no current DDS task running)
-		if(activeHead->next != NULL && activeHead->next->task.release_time == -1){
-			activeHead->next->task.release_time = (uint32_t)xTaskGetTickCount();
-			xTaskCreate(User_Defined_Task,"UserDefinedTask",configMINIMAL_STACK_SIZE, &activeHead->next->task, 3, &(activeHead->next->task.t_handle));
-		}
+
 		// Receive new tasks from generator
 		if(xQueueReceive(release_queue, &new_release_task, 0))
 		{
@@ -160,12 +159,15 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 		if(xQueueReceive(complete_queue, &completed_task_id, 0))
 		{
 			printf("completed task: %d\n", completed_task_id);
-			printf("active head: %d\n", activeHead->next->task.task_id);
-			vTaskPrioritySet(activeHead->next->task.t_handle, 1);
-			printf("set\n");
-			vTaskDelete(activeHead->next->task.t_handle);
 
-			printf("Deleted\n");
+
+
+			struct dd_task removed = listDelete(activeHead, completed_task_id);
+			printf("removed head: %d\n", removed.task_id);
+
+
+
+			CPUAvailable = 1; // F-Task finished running, next F-Task can run
 
 //			completed_task = pop_from_ll
 //			listInsert(completeHead, completed, 0);
@@ -173,9 +175,14 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 
 		// Modify Active list for overdue
 
+		// Release new task if CPU available (no current DDS task running) and no newly released tasks to process
+		if(activeHead->next != NULL && CPUAvailable && (xQueuePeek(release_queue, &new_release_task, 0) == pdFALSE)){
+			CPUAvailable = 0;
+			activeHead->next->task.release_time = (uint32_t)xTaskGetTickCount();
+			xTaskCreate(User_Defined_Task,"UserDefinedTask",configMINIMAL_STACK_SIZE, &activeHead->next->task, 3, &(activeHead->next->task.t_handle));
+		}
 
 
-		printf("DDS\n");
 		vTaskDelay(pdMS_TO_TICKS(1));
 	}
 
@@ -209,6 +216,23 @@ void listInsert(struct dd_task_list* head, struct dd_task new_task, int sort_fla
 	curr->next = new_node;
 }
 
+struct dd_task listDelete(struct dd_task_list* head, uint32_t task_id)
+{
+
+	struct dd_task_list *curr = head;
+	struct dd_task_list *prev = head;
+	while (curr->task.task_id != task_id){
+		prev = curr;
+		curr = curr->next;
+	}
+	if (curr->next == NULL){
+		prev->next = NULL;
+	} else {
+		prev->next = curr->next;
+	}
+	return curr->task;
+
+}
 
 /*-----------------------------------------------------------*/
 
@@ -248,7 +272,8 @@ static void User_Defined_Task( void *pvParameters )
 	if(!xQueueSend(complete_queue, &task_id, 0)){
 		printf("Failed to send new dd Task to complete queue\n");
 	}
-	vTaskSuspend(NULL);
+
+	vTaskDelete(NULL);
 
 
 
@@ -271,9 +296,9 @@ static void Deadline_Driven_Task_Generator1( void *pvParameters )
 		if (TEST_BENCH == 1){ // test bench 1
 
 
-			release_dd_task(User_Defined_Task, 0, 1, 95, 500 + i*500); // 0 for periodic
-//			release_dd_task(User_Defined_Task, 0, 2, 150, 500 + i*1500);
-//			release_dd_task(User_Defined_Task, 0, 3, 250, 750 + i*1500);
+			release_dd_task(User_Defined_Task, 0, 1, 95, 600 + i*500); // 0 for periodic
+			release_dd_task(User_Defined_Task, 0, 2, 150, 500 + i*1500);
+			release_dd_task(User_Defined_Task, 0, 3, 250, 750 + i*1500);
 			vTaskDelay(pdMS_TO_TICKS(500));
 
 
