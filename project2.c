@@ -11,7 +11,7 @@
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
 
-#define release_queue_length 100
+#define release_queue_length 20
 #define TEST_BENCH 3
 
 /*-----------------------------------------------------------*/
@@ -35,9 +35,7 @@ static void prvSetupHardware( void );
  * this file.
  */
 static void Monitor_Task( void *pvParameters );
-static void Deadline_Driven_Task_Generator1( void *pvParameters );
-//static void Deadline_Driven_Task_Generator2( void *pvParameters );
-//static void Deadline_Driven_Task_Generator3( void *pvParameters );
+static void Deadline_Driven_Task_Generator( void *pvParameters );
 static void Deadline_Driven_Scheduler( void *pvParameters );
 static void User_Defined_Task( void *pvParameters );
 
@@ -62,9 +60,9 @@ void release_dd_task(uint32_t, uint32_t, uint32_t, uint32_t);
 void dd_create(struct dd_task_list* );
 struct dd_task dd_delete(struct dd_task_list* , uint32_t);
 void dd_remove_overdue(struct dd_task_list*, struct dd_task_list*);
-void get_active_dd_task_list(void);
-void get_complete_dd_task_list(void);
-void get_overdue_dd_task_list(void);
+int get_active_dd_task_list(struct dd_task_list*);
+int get_complete_dd_task_list(struct dd_task_list*);
+int get_overdue_dd_task_list(struct dd_task_list*);
 
 xQueueHandle release_queue = 0;
 xQueueHandle complete_queue = 0;
@@ -77,21 +75,15 @@ xQueueHandle complete_list_queue = 0;
 int main(void)
 {
 
-//	/* Initialize LEDs */
-//	STM_EVAL_LEDInit(amber_led);
-//	STM_EVAL_LEDInit(green_led);
-//	STM_EVAL_LEDInit(red_led);
-//	STM_EVAL_LEDInit(blue_led);
-
 	/* Configure the system ready to run the demo.  The clock configuration
 	can be done here if it was not done before main() was called. */
 	prvSetupHardware();
+	printf("TEST BENCH: %d\n", TEST_BENCH);
 
-	/* Create the queue used by the queue send and queue receive tasks.
-	http://www.freertos.org/a00116.html */
-	release_queue = xQueueCreate( 	release_queue_length,		/* The number of items the queue can hold. */
+	/* Create the queue used by the queue send and queue receive tasks. */
+	release_queue = xQueueCreate( 	release_queue_length,		/* The items the queue can hold. */
 							sizeof( struct dd_task ) );	/* The size of each item the queue holds. */
-	complete_queue = xQueueCreate( 	release_queue_length,		/* The number of items the queue can hold. */
+	complete_queue = xQueueCreate( 	release_queue_length,		/* The items the queue can hold. */
 								sizeof( uint32_t ) );	/* The size of each item the queue holds. */
 	active_list_queue = xQueueCreate( 1, sizeof( struct dd_task_list ) );
 	overdue_list_queue = xQueueCreate( 1, sizeof( struct dd_task_list ) );
@@ -101,14 +93,15 @@ int main(void)
 	/* Add to the registry, for the benefit of kernel aware debugging. */
 	vQueueAddToRegistry( release_queue, "ReleaseQueue" );
 	vQueueAddToRegistry( complete_queue, "CompleteQueue" );
+	vQueueAddToRegistry( active_list_queue, "ActiveListQueue" );
+	vQueueAddToRegistry( overdue_list_queue, "OverdueListQueue" );
+	vQueueAddToRegistry( complete_list_queue, "CompleteListQueue" );
 
 
-//	xTaskCreate( Monitor_Task, "Monitor", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate( Deadline_Driven_Task_Generator1, "Gen1", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
-//	xTaskCreate( Deadline_Driven_Task_Generator2, "Gen2", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
-//	xTaskCreate( Deadline_Driven_Task_Generator3, "Gen3", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
+	/* Create tasks*/
+	xTaskCreate( Monitor_Task, "Monitor", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
+	xTaskCreate( Deadline_Driven_Task_Generator, "Gen", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
 	xTaskCreate( Deadline_Driven_Scheduler, "Scheduler", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
-
 
 
 	/* Start the tasks and timer running. */
@@ -121,21 +114,42 @@ int main(void)
 /*-----------------------------------------------------------*/
 
 static void Monitor_Task( void *pvParameters ){
+
+	struct dd_task_list* overdueHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	struct dd_task_list* completeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	struct dd_task_list* activeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	int count = 0;
+
 	while(1){
-		struct dd_task_list* activeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+		vTaskDelay(pdMS_TO_TICKS(1500));
+		printf("%d------------------------------------\n", (int) xTaskGetTickCount());
 		if(xQueueReceive(active_list_queue, &activeHead, 0)){
-
+			count = get_active_dd_task_list(activeHead);
+			printf("Active tasks: %d\n", count);
+		}
+		else{
+			printf("Active tasks: 0\n");
 		}
 
-		struct dd_task_list* overdueHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
-		if(xQueueReceive(overdue_list_queue, &overdueHead, 0)){
-
-		}
-
-		struct dd_task_list* completeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
 		if(xQueueReceive(complete_list_queue, &completeHead, 0)){
-
+			count = get_complete_dd_task_list(completeHead);
+			printf("Completed tasks: %d\n", count);
 		}
+		else{
+			printf("Completed tasks: 0\n");
+		}
+
+		if(xQueueReceive(overdue_list_queue, &overdueHead, 0)){
+			count = get_overdue_dd_task_list(overdueHead);
+			printf("Overdue tasks: %d\n", count);
+		}
+		else{
+			printf("Overdue tasks: 0\n");
+		}
+
+		printf("%d------------------------------------\n", (int) xTaskGetTickCount());
+
+
 	}
 }
 
@@ -161,6 +175,7 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 		if(xQueueReceive(release_queue, &new_release_task, 0))
 		{
 
+			printf("Received task: %d at: %d\n", new_release_task.task_id, (uint32_t)xTaskGetTickCount());
 			listInsert(activeHead, new_release_task, 1);
 		}
 
@@ -174,14 +189,13 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 
 			 // F-Task finished running, next F-Task can run
 
-			printf("Completed task_id: %d completed at: %d absolute deadline: %d\n",removed.task_id,removed.completion_time, removed.absolute_deadline);
+			printf("Completed task: %d at: %d\n", removed.task_id,removed.completion_time);
 
 			if(removed.completion_time < removed.absolute_deadline){
-				printf("!!!!ONTIME!!!!\n");
 				listInsert(completeHead, removed, 0);
 			}
 			else{
-				printf("!!!!OVERDUE!!!!\n");
+				printf("Overdue Task: %d at: %d\n", removed.task_id, (int) xTaskGetTickCount());
 				listInsert(overdueHead, removed, 0);
 			}
 		}
@@ -193,18 +207,25 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 		if(activeHead->next != NULL && CPUAvailable && (xQueuePeek(release_queue, &new_release_task, 0) == pdFALSE)){
 
 			CPUAvailable = 0;
+
 			dd_create(activeHead);
 
 		}
 
-		if(!xQueueOverwrite(active_list_queue, &activeHead)){
-			printf("Failed to send new dd Task to actice list queue\n");
+		if(activeHead->next != NULL){
+			if(!xQueueOverwrite(active_list_queue, &activeHead)){
+				printf("Failed to send new dd Task to active list queue\n");
+			}
 		}
-		if(!xQueueOverwrite(overdue_list_queue, &overdueHead)){
-			printf("Failed to send new dd Task to overdue list queue\n");
+		if(overdueHead->next != NULL){
+			if(!xQueueOverwrite(overdue_list_queue, &overdueHead)){
+				printf("Failed to send new dd Task to overdue list queue\n");
+			}
 		}
-		if(!xQueueOverwrite(complete_list_queue, &completeHead)){
-			printf("Failed to send new dd Task to complete list queue\n");
+		if(completeHead->next != NULL){
+			if(!xQueueOverwrite(complete_list_queue, &completeHead)){
+				printf("Failed to send new dd Task to complete list queue\n");
+			}
 		}
 
 		vTaskDelay(pdMS_TO_TICKS(1));
@@ -214,7 +235,7 @@ static void Deadline_Driven_Scheduler( void *pvParameters )
 
 void dd_create(struct dd_task_list* activeHead){
 	activeHead->next->task.release_time = (uint32_t)xTaskGetTickCount();
-	printf("Released task_id: %d release time: %d\n", activeHead->next->task.task_id, activeHead->next->task.release_time);
+//	printf("Released task: %d at: %d\n", activeHead->next->task.task_id, activeHead->next->task.release_time);
 	xTaskCreate(User_Defined_Task,"UserDefinedTask",configMINIMAL_STACK_SIZE, &activeHead->next->task, 3, &(activeHead->next->task.t_handle));
 }
 
@@ -264,26 +285,50 @@ struct dd_task dd_delete(struct dd_task_list* head, uint32_t task_id)
 	return curr->task;
 }
 
-void read_list_info(struct dd_task_list* head, int list_type)
+int get_active_dd_task_list(struct dd_task_list* activeHead)
 {
-	struct dd_task_list *curr = head;
+	struct dd_task_list *curr = activeHead;
+	int i = 0;
+//	printf("Active: H ");
 	while (curr->next != NULL ){
 		curr = curr->next;
-		if(list_type == 0)
-		{
-			printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time);
-		}
-		else if (list_type == 1)
-		{
-			printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d Completion Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time, (int)curr->task.completion_time);
-		}
-		else
-		{
-			printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d Completion Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time, (int)curr->task.completion_time);
-		}
+		//printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time);
+//		printf("-> %d ", (int)curr->task.task_id);
+		i++;
 	}
+//	printf("\n");
+	return i;
 }
 
+int get_complete_dd_task_list(struct dd_task_list* completeHead)
+{
+	struct dd_task_list *curr = completeHead;
+	int i = 0;
+//	printf("Completed: H ");
+	while (curr->next != NULL ){
+		curr = curr->next;
+		//printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d Completion Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time, (int)curr->task.completion_time);
+//		printf("-> %d ", (int)curr->task.task_id);
+		i++;
+	}
+//	printf("\n");
+	return i;
+}
+
+int get_overdue_dd_task_list(struct dd_task_list* overdueHead)
+{
+	struct dd_task_list *curr = overdueHead;
+	int i = 0;
+//	printf("Overdue: H ");
+	while (curr->next != NULL ){
+		curr = curr->next;
+//		printf("-> %d ", (int)curr->task.task_id);
+		//printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d Completion Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time, (int)curr->task.completion_time);
+		i++;
+	}
+//	printf("\n");
+	return i;
+}
 
 void dd_remove_overdue(struct dd_task_list* activeHead, struct dd_task_list* overdueHead){
 	struct dd_task_list *curr = activeHead;
@@ -304,10 +349,9 @@ void dd_remove_overdue(struct dd_task_list* activeHead, struct dd_task_list* ove
 			return;
 		}
 
-
 		prev->next = curr->next;
 		listInsert(overdueHead, curr->task, 0);
-		printf("overdue unrun task: %d\n", curr->task.task_id);
+		printf("Overdue Task: %d at: %d\n", curr->task.task_id, (int) xTaskGetTickCount());
 		curr = prev->next;
 	}
 }
@@ -349,42 +393,65 @@ static void User_Defined_Task( void *pvParameters )
 }
 /*-----------------------------------------------------------*/
 
-static void Monitor_Task( void *pvParameters )
-{
-	printf("MONITOR\n");
-	vTaskDelay(1000);
-}
 
-
-static void Deadline_Driven_Task_Generator1( void *pvParameters )
+static void Deadline_Driven_Task_Generator( void *pvParameters )
 {
 	uint32_t i = 0;
 
 	while (1){
-		printf("Releasing tasks from GEN at time %d\n", xTaskGetTickCount());
+
+//		printf("Releasing tasks from GEN at time %d\n", xTaskGetTickCount());
+
 		if (TEST_BENCH == 1){ // test bench 1
-			release_dd_task(0, 1, 95, 500 + i*500);
+			release_dd_task(0, 1, 95, 500 + i*1500);
 			release_dd_task(0, 2, 150, 500 + i*1500);
 			release_dd_task(0, 3, 250, 750 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(500));
+
+			release_dd_task(0, 1, 95, 1000 + i*1500);
+			release_dd_task(0, 2, 150, 1000 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 3, 250, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1500 + i*1500);
+			release_dd_task(0, 2, 150, 1500 + i*1500);
 			vTaskDelay(pdMS_TO_TICKS(500));
 		}
 		else if (TEST_BENCH == 2){ // test bench 2
 			release_dd_task(0, 1, 95, 250 + i*1500);
-//			release_dd_task(0, 2, 150, 500 + i*1500);
-//			release_dd_task(0, 3, 250, 750 + i*1500);
+			release_dd_task(0, 2, 150, 500 + i*1500);
+			release_dd_task(0, 3, 250, 750 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 750 + i*1500);
+			release_dd_task(0, 2, 150, 1000 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1000 + i*1500);
+			release_dd_task(0, 3, 250, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1250 + i*1500);
+			release_dd_task(0, 2, 150, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1500 + i*1500);
 			vTaskDelay(pdMS_TO_TICKS(250));
 		}
 		else { //Test Bench 3
 			release_dd_task(0, 1, 100, 500 + i*500);
 			release_dd_task(0, 2, 200, 500 + i*500);
 			release_dd_task(0, 3, 200, 500 + i*500);
-			release_dd_task(0, 4, 200, 500 + i*500);
 			vTaskDelay(pdMS_TO_TICKS(500));
 		}
 		i++;
 	}
 }
-
 
 
 void vApplicationMallocFailedHook( void )
@@ -440,7 +507,4 @@ static void prvSetupHardware( void )
 	/* Ensure all priority bits are assigned as preemption priority bits.
 	http://www.freertos.org/RTOS-Cortex-M3-M4.html */
 	NVIC_SetPriorityGrouping( 0 );
-
-	/* TODO: Setup the clocks, etc. here, if they were not configured before
-	main() was called. */
 }
