@@ -48,6 +48,7 @@ struct dd_task_list {
 
 void listInsert(struct dd_task_list*, struct dd_task, int);
 void release_dd_task(uint32_t, uint32_t, uint32_t, uint32_t);
+void complete_dd_task(uint32_t);
 void dd_create(struct dd_task_list* );
 struct dd_task dd_delete(struct dd_task_list* , uint32_t);
 void dd_remove_overdue(struct dd_task_list*, struct dd_task_list*);
@@ -232,10 +233,7 @@ static void User_Defined_Task( void *pvParameters )
 	while ((int)xTaskGetTickCount() < endTime);
 	uint32_t task_id = curr_task->task_id;
 	curr_task->completion_time = (uint32_t) xTaskGetTickCount();
-
-	if(!xQueueSend(completed_queue, &task_id, 0)){
-		printf("Failed to send new dd Task to complete queue\n");
-	}
+	complete_dd_task(task_id);
 	vTaskSuspend(NULL);
 }
 
@@ -429,6 +427,12 @@ void dd_remove_overdue(struct dd_task_list* activeHead, struct dd_task_list* ove
 
 /*-----------------------------------------------------------*/
 
+void complete_dd_task(uint32_t task_id){
+
+	if(!xQueueSend(completed_queue, &task_id, 0)){
+		printf("Failed to send new dd Task to complete queue\n");
+	}
+}
 
 void release_dd_task(uint32_t type, uint32_t task_id, uint32_t execution_time, uint32_t absolute_deadline)
 {
