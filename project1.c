@@ -1,8 +1,3 @@
-/* Traffic Light System (TLS) Project Code
- * Authors: Nolan Kurylo, Treavor Gagne
- * ECE 455 B01
- */
-
 /* Standard includes. */
 #include <stdint.h>
 #include <stdio.h>
@@ -15,305 +10,444 @@
 #include "../FreeRTOS_Source/include/semphr.h"
 #include "../FreeRTOS_Source/include/task.h"
 #include "../FreeRTOS_Source/include/timers.h"
-#include "stm32f4xx_gpio.h"
-#include "stm32f4xx_rcc.h"
-#include "stm32f4xx_adc.h"
+
+#define release_queue_length 20
+#define TEST_BENCH 3
 
 /*-----------------------------------------------------------*/
-#define mainQUEUE_LENGTH 100
 
-#define amber_led	LED3
-#define green_led	LED4
-#define red_led		LED5
 
-#define GREEN_STATE	0
-#define AMBER_STATE	1
-#define RED_STATE	2
+#define INCLUDE_vTaskDelete 1
 
-#define TRAFFIC_RED_LIGHT		GPIO_Pin_0
-#define TRAFFIC_AMBER_LIGHT		GPIO_Pin_1
-#define TRAFFIC_GREEN_LIGHT 	GPIO_Pin_2
-
-#define SHIFT_REGISTER_RST GPIO_Pin_8
-#define SHIFT_REGISTER_CLK GPIO_Pin_7
-#define SHIFT_REGISTER_DATA GPIO_Pin_6
-
-#define POT_INPUT GPIO_Pin_3
-#define TRAFFIC_ARRAY_LEN 19
-
-static void hardwareInit( void );
+static void prvSetupHardware( void );
 
 /*
  * The queue send and receive tasks as described in the comments at the top of
  * this file.
  */
-static void Manager_Task( void );
-static void Traffic_Task( void );
-static void Traffic_Light_State_Task( void );
-void shiftClockPointer( void );
-void moveTrafficRight( int, int, int );
-void updateTraffic( int );
-int updateFlow( int );
-void vCallbackFunction( TimerHandle_t );
+static void Monitor_Task( void *pvParameters );
+static void Deadline_Driven_Task_Generator( void *pvParameters );
+static void Deadline_Driven_Scheduler( void *pvParameters );
+static void User_Defined_Task( void *pvParameters );
 
-xQueueHandle xQueue_nextCar = 0;
-xQueueHandle xQueue_flowRate = 0;
-xQueueHandle xQueue_lightState = 0;
-xQueueHandle xQueue_updatedLight = 0;
-TimerHandle_t xTimer;
+
+struct dd_task {
+	TaskHandle_t t_handle;
+	uint32_t type; // PERIODIC or APERIODIC
+	uint32_t task_id;
+	uint32_t release_time;
+	uint32_t execution_time;
+	uint32_t absolute_deadline;
+	uint32_t completion_time;
+};
+
+struct dd_task_list {
+    struct dd_task task;
+    struct dd_task_list* next;
+};
+
+void listInsert(struct dd_task_list*, struct dd_task, int);
+void release_dd_task(uint32_t, uint32_t, uint32_t, uint32_t);
+void dd_create(struct dd_task_list* );
+struct dd_task dd_delete(struct dd_task_list* , uint32_t);
+void dd_remove_overdue(struct dd_task_list*, struct dd_task_list*);
+int get_active_dd_task_list(struct dd_task_list*);
+int get_complete_dd_task_list(struct dd_task_list*);
+int get_overdue_dd_task_list(struct dd_task_list*);
+
+xQueueHandle release_queue = 0;
+xQueueHandle completed_queue = 0;
+xQueueHandle active_list_queue = 0;
+xQueueHandle overdue_list_queue = 0;
+xQueueHandle complete_list_queue = 0;
 
 /*-----------------------------------------------------------*/
 
 int main(void)
 {
-	/* Configure the GPIO, SPC, and Potentiometer */
-	hardwareInit();
 
-	/* Timer setup */
-	xTimer = xTimerCreate("Traffic Timer", pdMS_TO_TICKS(1000), pdFALSE, (void *)0, vCallbackFunction);
+	/* Configure the system ready */
+	prvSetupHardware();
+	printf("TEST BENCH: %d\n", TEST_BENCH);
 
-	/* Queue for passing the next generated car (0 or 1) */
-	xQueue_nextCar = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
-	/* Queue for passing the flow rate from the potentiometer */
-	xQueue_flowRate = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
-	/* Queue for passing the current state of the light (GREEN, AMBER, RED) */
-	xQueue_lightState = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
-	/* Queue for passing the light that needs to change to the timer Callback */
-	xQueue_updatedLight = xQueueCreate(mainQUEUE_LENGTH, sizeof(uint16_t));
+	/* Create the queue used by the queue send and queue receive tasks. */
+	release_queue = xQueueCreate( 	release_queue_length,		/* The items the queue can hold. */
+							sizeof( struct dd_task ) );	/* The size of each item the queue holds. */
+	completed_queue = xQueueCreate( 	release_queue_length,		/* The items the queue can hold. */
+								sizeof( uint32_t ) );	/* The size of each item the queue holds. */
+	active_list_queue = xQueueCreate( 1, sizeof( struct dd_task_list ) );
+	overdue_list_queue = xQueueCreate( 1, sizeof( struct dd_task_list ) );
+	complete_list_queue = xQueueCreate( 1, sizeof( struct dd_task_list ) );
+
 
 	/* Add to the registry, for the benefit of kernel aware debugging. */
-	vQueueAddToRegistry( xQueue_nextCar, "nextCarQueue" );
-	vQueueAddToRegistry( xQueue_flowRate, "flowRateQueue" );
-	vQueueAddToRegistry( xQueue_lightState, "lightStateQueue" );
-	vQueueAddToRegistry( xQueue_updatedLight, "updatedLightQueue" );
+	vQueueAddToRegistry( release_queue, "ReleaseQueue" );
+	vQueueAddToRegistry( completed_queue, "CompleteQueue" );
+	vQueueAddToRegistry( active_list_queue, "ActiveListQueue" );
+	vQueueAddToRegistry( overdue_list_queue, "OverdueListQueue" );
+	vQueueAddToRegistry( complete_list_queue, "CompleteListQueue" );
 
-	xTaskCreate(Manager_Task, "ManagerTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
-	xTaskCreate(Traffic_Task, "TrafficTask", configMINIMAL_STACK_SIZE, NULL, 2, NULL);
-	xTaskCreate(Traffic_Light_State_Task, "LightStateTask", configMINIMAL_STACK_SIZE, NULL, 1, NULL);
 
-	/* Set the initial state of the light to GREEN */
-	int nextLight = GREEN_STATE;
-	if( !xQueueSend(xQueue_updatedLight,&nextLight,500))
-	{
-		printf("Error sending Initial light state\n");
-	}
+	/* Create tasks*/
+	xTaskCreate( Monitor_Task, "Monitor", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
+	xTaskCreate( Deadline_Driven_Task_Generator, "Gen", configMINIMAL_STACK_SIZE, NULL, 4, NULL);
+	xTaskCreate( Deadline_Driven_Scheduler, "Scheduler", configMINIMAL_STACK_SIZE, NULL, 3, NULL);
 
-	/* Start the tasks and get the timer running. */
+
+	/* Start the tasks and timer running. */
 	vTaskStartScheduler();
+
 	return 0;
 }
 
+
+
 /*--------------------------- TASKS -------------------------------------*/
 
-/* Main Task (highest priority) to receive potentiometer input, generate the next car, and
- * send the traffic flow rate + next car into the queues */
-static void Manager_Task( void *pvParameters )
+/* Monitor Task (highest priority) to print the contents of each dd task list at the end of the hyperperiod */
+
+static void Monitor_Task( void *pvParameters ){
+
+	struct dd_task_list* overdueHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	struct dd_task_list* completeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	struct dd_task_list* activeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	int count = 0;
+
+	while(1){
+		vTaskDelay(pdMS_TO_TICKS(1500));
+		printf("%d------------------------------------\n", (int) xTaskGetTickCount());
+		if(xQueueReceive(active_list_queue, &activeHead, 0)){
+			count = get_active_dd_task_list(activeHead);
+			printf("Active tasks: %d\n", count);
+		}
+		else{
+			printf("Active tasks: 0\n");
+		}
+
+		if(xQueueReceive(complete_list_queue, &completeHead, 0)){
+			count = get_complete_dd_task_list(completeHead);
+			printf("Completed tasks: %d\n", count);
+		}
+		else{
+			printf("Completed tasks: 0\n");
+		}
+
+		if(xQueueReceive(overdue_list_queue, &overdueHead, 0)){
+			count = get_overdue_dd_task_list(overdueHead);
+			printf("Overdue tasks: %d\n", count);
+		}
+		else{
+			printf("Overdue tasks: 0\n");
+		}
+
+		printf("%d------------------------------------\n", (int) xTaskGetTickCount());
+
+
+	}
+}
+
+/* DDS Task (third highest priority) receives, releases and completes user-defined tasks. Manages dd task lists */
+static void Deadline_Driven_Scheduler( void *pvParameters )
 {
-	uint16_t next_car = 0;
 
-	ADC_SoftwareStartConv(ADC1);
+	/* linked lists for tasks */
+	struct dd_task_list* activeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	struct dd_task_list* completeHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	struct dd_task_list* overdueHead = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	activeHead->next = NULL;
+	completeHead->next = NULL;
+	overdueHead->next = NULL;
 
-	GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
-	GPIO_ResetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
-	GPIO_SetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
+	struct dd_task new_release_task;
 
-	int flow_rate; /* Corresponding rate of traffic flow based on corresponding probability */
+	uint32_t completed_task_id; // receive completed tasks in completed_queue
+	int CPUAvailable = 1; // flag for if new nest UDF can run - initially free to run F-Tasks
 	while(1)
 	{
 
-		while(!ADC_GetFlagStatus(ADC1, ADC_FLAG_EOC));
-		int flow = ADC_GetConversionValue(ADC1);
-
-		if(flow < 820){ // LOW
-			next_car = updateFlow(5); // (1/5) 20% chance to add traffic
-			flow_rate = 1;
-		}
-		else if((flow >= 820) && (flow < 1640)){ //LOW - MED
-			next_car = updateFlow(4); // (1/4) 25% chance to add traffic
-			flow_rate = 2;
-		}
-		else if((flow >= 1640) && (flow < 2460)){ // MED
-			next_car = updateFlow(3); // (1/3) 33% chance to add traffic
-			flow_rate = 3;
-		}
-		else if((flow >= 2460) && (flow < 3280)){ //MED - HIGH
-			next_car = updateFlow(2); // (1/2) 50% chance to add traffic
-			flow_rate = 4;
-		}
-		else{ // (flow >= 3280) //High
-			next_car = updateFlow(1); // (1/1) 100% of adding traffic
-			flow_rate = 5;
-		}
-
-		/* Send current traffic flow rate and the next car */
-		if( xQueueSend(xQueue_flowRate, &flow_rate,1000) && xQueueSend(xQueue_nextCar,&next_car,1000))
+		// Receive new tasks from generator
+		if(xQueueReceive(release_queue, &new_release_task, 0))
 		{
-			vTaskDelay(750);
+			printf("Received task: %d at: %d\n", (int)new_release_task.task_id, (int)xTaskGetTickCount());
+			listInsert(activeHead, new_release_task, 1);
 		}
-		else
+
+		// Complete DDS tasks
+		if(xQueueReceive(completed_queue, &completed_task_id, 0))
 		{
-			printf("ManagerTask Failed!\n");
-		}
-	}
-}
+			CPUAvailable = 1; // reset flag so DDS can release a new UDF task
+			struct dd_task removed = dd_delete(activeHead, completed_task_id);
 
-/* Traffic Light State Task - determines timing of traffic lights based on received flow rate */
-static void Traffic_Light_State_Task( void *pvParameters )
-{
+			 // F-Task finished running, next F-Task can run
+			printf("Completed task: %d at: %d\n", (int)removed.task_id, (int)removed.completion_time);
 
-	uint16_t flow_rate;
-	uint16_t curr_light;
-
-	while(1)
-	{
-		if (xQueueReceive(xQueue_flowRate, &flow_rate, 100)){
-			if(xQueueReceive(xQueue_updatedLight, &curr_light, 250))
-			{
-
-				/* Determine length of time for each light state based on the current flow rate */
-				int timer_amount;
-				float base = 1000;
-				float offset = 2000;
-				float inverse = (float) (1.0 / (float) flow_rate);
-
-				int GREEN_TIME = flow_rate * base + offset;
-				int AMBER_TIME = 2500;
-				int RED_TIME =  inverse * base * 5 + offset;
-
-				/* Change timer duration for the next time the light changes (timer ends) */
-				if(curr_light == AMBER_STATE) timer_amount = AMBER_TIME;
-				else if(curr_light == GREEN_STATE) timer_amount = GREEN_TIME;
-				else if(curr_light == RED_STATE) timer_amount = RED_TIME;
-
-				if( xTimerChangePeriod( xTimer, pdMS_TO_TICKS(timer_amount), 100 ) != pdPASS ) {
-					printf("Failed to start timer\n");
-				}
-
-				/* Send the current light state to the timer callback so that it can change it when the timer is up */
-				if( !xQueueSend(xQueue_lightState, &curr_light,1000) )
-				{
-					printf("Failed to send lightToUpdate to timer\n");
-				}
+			// Check if task completed on time or not
+			if(removed.completion_time < removed.absolute_deadline){
+				listInsert(completeHead, removed, 0);
 			}
-
-		}
-		vTaskDelay(250);
-	}
-}
-
-/* Traffic Task - waits to receive newly generated car and also updates traffic display by shifting the traffic */
-static void Traffic_Task( void *pvParameters ) //
-{
-	int cars_array[TRAFFIC_ARRAY_LEN + 1] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-	uint16_t next_car;
-	uint16_t current_light;
-
-	while(1)
-	{
-		if( xQueueReceive(xQueue_nextCar, &next_car, 250) && xQueuePeek(xQueue_lightState, &current_light, 250)) // get next car from queue push by manager
-		{
-			moveTrafficRight(cars_array, next_car, current_light);
-		}
-		updateTraffic(cars_array); // update display
-		vTaskDelay(100);
-	}
-}
-
-/* Traffic Timer Callback function - receives the current light state, updates it to the next light state (and the display) and sends it back */
-void vCallbackFunction( TimerHandle_t xTimer )
-{
-	uint16_t light_to_update;
-	uint16_t next_light;
-
-	if( xQueueReceive(xQueue_lightState, &light_to_update, 500) )
-	{
-		/* GREEN -> AMBER -> RED -> GREEN -> AMBER -> ... */
-		next_light = (light_to_update + 1) % 3;
-
-		/* Update Traffic Lights on display via GPIOC*/
-		if(next_light == RED_STATE){
-			GPIO_ResetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
-			GPIO_ResetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
-			GPIO_SetBits(GPIOC, TRAFFIC_RED_LIGHT);
-		}
-		else if(next_light == AMBER_STATE){
-			GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
-			GPIO_SetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
-			GPIO_ResetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
-		}
-		else{ // GREEN STATE
-			GPIO_ResetBits(GPIOC, TRAFFIC_RED_LIGHT);
-			GPIO_ResetBits(GPIOC, TRAFFIC_AMBER_LIGHT);
-			GPIO_SetBits(GPIOC, TRAFFIC_GREEN_LIGHT);
-		}
-
-		/* Send back the newly updated light state */
-		if( !xQueueSend(xQueue_updatedLight, &next_light,1000) )
-		{
-			printf("Failed to send next_light to xQueue_lightState\n");
-		}
-	}
-}
-
-/*------------------------------------- FUNCTIONS -------------------------------------------*/
-/* Generates a car (1) or no car (0) based on the input probability */
-int updateFlow(int probability){
-	uint16_t next_car;
-	if(probability == 1) next_car = 1;
-	else{
-		int rate = rand() % (probability);
-		if(rate == 0) next_car = 1;
-		else next_car = 0;
-	}
-	return next_car;
-}
-
-/* Shifts traffic in the cars array to the right (based on the light state), adding in the newly generated car at the front of the array */
-void moveTrafficRight(int cars_array[], int new_car, int current_state){
-	if(current_state != GREEN_STATE){ // shifting the same for RED and AMBER light states
-		for(int i = 7; i > 0 ; i--){ // shift traffic before the intersection, stopping at the intersection
-			if(cars_array[i] == 0){
-				cars_array[i] = cars_array[i-1];
-				cars_array[i-1] = 0;
+			else{
+				printf("Overdue Task: %d at: %d\n", (int)removed.task_id, (int)xTaskGetTickCount());
+				listInsert(overdueHead, removed, 0);
 			}
 		}
-		if(cars_array[0] == 0) cars_array[0] = new_car; // add new car to front if there is room for it
-		for(int i = TRAFFIC_ARRAY_LEN; i > 7 ; i--){ // shift traffic in and after the intersection to the right
-			if(i == 8){
-				cars_array[i] = 0;
-				continue;
+
+		// Modify Active list for any overdue (move overdue task from active list to overdue list)
+		dd_remove_overdue(activeHead, overdueHead);
+
+		// Release new task if CPU available (no current DDS task running) and no newly released tasks to process
+		if(activeHead->next != NULL && CPUAvailable && (xQueuePeek(release_queue, &new_release_task, 0) == pdFALSE)){
+
+			CPUAvailable = 0; // turn off flag so that no new UDF tasks can be released until this one is done
+			dd_create(activeHead); // create the UDF from the head of the active dd task list
+
+		}
+
+		// Write dd task lists via queues to be received by Monitor task
+		if(activeHead->next != NULL){
+			if(!xQueueOverwrite(active_list_queue, &activeHead)){
+				printf("Failed to send new dd Task to active list queue\n");
 			}
-			cars_array[i]=cars_array[i-1];
 		}
-	}
-	else{ // GREEN light state, move all traffic thru
-		for(int i = TRAFFIC_ARRAY_LEN; i > 0 ; i--){
-			cars_array[i] = cars_array[i-1];
-			cars_array[i-1] = 0;
+		if(overdueHead->next != NULL){
+			if(!xQueueOverwrite(overdue_list_queue, &overdueHead)){
+				printf("Failed to send new dd Task to overdue list queue\n");
+			}
 		}
-		cars_array[0] = new_car; // add new car to the front of array
+		if(completeHead->next != NULL){
+			if(!xQueueOverwrite(complete_list_queue, &completeHead)){
+				printf("Failed to send new dd Task to complete list queue\n");
+			}
+		}
+		vTaskDelay(pdMS_TO_TICKS(1));
 	}
 }
 
-/* Updates the TLS display for the cars via SPC */
-void updateTraffic(int cars[]){
-	for(int i = 0; i <= TRAFFIC_ARRAY_LEN; i++){
-		// reset shift register
-		GPIO_SetBits(GPIOC, SHIFT_REGISTER_RST);
+/* UDF Task (same priority as DDS when running) - tasks in the dd_task struct, runs for e execution time,
+ * sets the completion time, sends the task_id back in the completed queue  */
+static void User_Defined_Task( void *pvParameters )
+{
+	struct dd_task* curr_task = (struct dd_task*) pvParameters;
+	int startTime = (int)xTaskGetTickCount();
+	int endTime = startTime + (int) curr_task->execution_time;
+	while ((int)xTaskGetTickCount() < endTime);
+	uint32_t task_id = curr_task->task_id;
+	curr_task->completion_time = (uint32_t) xTaskGetTickCount();
 
-		// if car in position set bit on, else set bit off
-		if (cars[TRAFFIC_ARRAY_LEN-i]) GPIO_SetBits(GPIOC, SHIFT_REGISTER_DATA);
-		else GPIO_ResetBits(GPIOC, SHIFT_REGISTER_DATA);
+	if(!xQueueSend(completed_queue, &task_id, 0)){
+		printf("Failed to send new dd Task to complete queue\n");
+	}
+	vTaskSuspend(NULL);
+}
 
-		// move shift register to next position
-		GPIO_ResetBits(GPIOC, SHIFT_REGISTER_CLK);
-		GPIO_SetBits(GPIOC, SHIFT_REGISTER_CLK);
-		GPIO_ResetBits(GPIOC, SHIFT_REGISTER_CLK);
+/* UDF Task (higher priority than DDS) - releases periodic tasks to be sent to DDS */
+static void Deadline_Driven_Task_Generator( void *pvParameters )
+{
+	uint32_t i = 0;
+
+	while (1){
+
+		if (TEST_BENCH == 1){ // test bench 1
+			release_dd_task(0, 1, 95, 500 + i*1500);
+			release_dd_task(0, 2, 150, 500 + i*1500);
+			release_dd_task(0, 3, 250, 750 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(500));
+
+			release_dd_task(0, 1, 95, 1000 + i*1500);
+			release_dd_task(0, 2, 150, 1000 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 3, 250, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1500 + i*1500);
+			release_dd_task(0, 2, 150, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(500));
+		}
+		else if (TEST_BENCH == 2){ // test bench 2
+			release_dd_task(0, 1, 95, 250 + i*1500);
+			release_dd_task(0, 2, 150, 500 + i*1500);
+			release_dd_task(0, 3, 250, 750 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 750 + i*1500);
+			release_dd_task(0, 2, 150, 1000 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1000 + i*1500);
+			release_dd_task(0, 3, 250, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1250 + i*1500);
+			release_dd_task(0, 2, 150, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+
+			release_dd_task(0, 1, 95, 1500 + i*1500);
+			vTaskDelay(pdMS_TO_TICKS(250));
+		}
+		else { //Test Bench 3
+			release_dd_task(0, 1, 100, 500 + i*500);
+			release_dd_task(0, 2, 200, 500 + i*500);
+			release_dd_task(0, 3, 200, 500 + i*500);
+			vTaskDelay(pdMS_TO_TICKS(500));
+		}
+		i++;
 	}
 }
 
+/*---------------------------------- DDS FUNCTIONS ------------------------------------------------------------*/
+/* DDS Function - Creates a FreeRTOS (UDF) task from the head of the active dd task linked list */
+void dd_create(struct dd_task_list* activeHead){
+	activeHead->next->task.release_time = (uint32_t)xTaskGetTickCount();
+	printf("Released task: %d at: %d\n", (int)activeHead->next->task.task_id, (int)activeHead->next->task.release_time);
+	xTaskCreate(User_Defined_Task,"UserDefinedTask",configMINIMAL_STACK_SIZE, &activeHead->next->task, 3, &(activeHead->next->task.t_handle));
+}
+
+/* DDS Function - Inserts into the specified dd task list, for active dd task list inserts in sorted order by EDF */
+void listInsert(struct dd_task_list* head, struct dd_task new_task, int sort_flag)
+{
+	struct dd_task_list *new_node = (struct dd_task_list*)malloc(sizeof(struct dd_task_list));
+	new_node->task = new_task;
+	new_node->next = NULL;
+	struct dd_task_list *curr = head;
+    if(sort_flag == 1) // insert in EDF order
+    {
+    	while(curr->next != NULL)
+    	{
+    		if(new_node->task.absolute_deadline < curr->next->task.absolute_deadline)
+    		{
+    			new_node->next = curr->next;
+				curr->next = new_node;
+				return;
+    		}
+    		else curr = curr->next;
+    	}
+    }
+    else
+    {
+    	while(curr->next != NULL)
+    	{
+    		curr = curr->next;
+    	}
+    }
+	curr->next = new_node;
+}
+
+/* DDS Function - iterates through the current dd task list and removes the specified node */
+struct dd_task dd_delete(struct dd_task_list* head, uint32_t task_id)
+{
+	struct dd_task_list *curr = head;
+	struct dd_task_list *prev = head;
+	while (curr->task.task_id != task_id ){
+		prev = curr;
+		curr = curr->next;
+	}
+	if (curr->next == NULL){
+		prev->next = NULL;
+	} else {
+		prev->next = curr->next;
+	}
+	vTaskDelete(curr->task.t_handle);
+	return curr->task;
+}
+
+/* Iterates through the current active dd task list */
+int get_active_dd_task_list(struct dd_task_list* activeHead)
+{
+	struct dd_task_list *curr = activeHead;
+	int i = 0;
+//	printf("Active: H ");
+	while (curr->next != NULL ){
+		curr = curr->next;
+		//printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time);
+//		printf("-> %d ", (int)curr->task.task_id);
+		i++;
+	}
+//	printf("\n");
+	return i;
+}
+
+/* Iterates through the current complete dd task list */
+int get_complete_dd_task_list(struct dd_task_list* completeHead)
+{
+	struct dd_task_list *curr = completeHead;
+	int i = 0;
+//	printf("Completed: H ");
+	while (curr->next != NULL ){
+		curr = curr->next;
+		//printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d Completion Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time, (int)curr->task.completion_time);
+//		printf("-> %d ", (int)curr->task.task_id);
+		i++;
+	}
+//	printf("\n");
+	return i;
+}
+
+/* Iterates through the current overdue dd task list */
+int get_overdue_dd_task_list(struct dd_task_list* overdueHead)
+{
+	struct dd_task_list *curr = overdueHead;
+	int i = 0;
+//	printf("Overdue: H ");
+	while (curr->next != NULL ){
+		curr = curr->next;
+//		printf("-> %d ", (int)curr->task.task_id);
+		//printf("Task: Type: %d ID: %d Deadline: %d Release Time: %d Completion Time: %d\n", (int)curr->task.type,(int)curr->task.task_id, (int)curr->task.absolute_deadline, (int)curr->task.release_time, (int)curr->task.completion_time);
+		i++;
+	}
+//	printf("\n");
+	return i;
+}
+
+void dd_remove_overdue(struct dd_task_list* activeHead, struct dd_task_list* overdueHead){
+	struct dd_task_list *curr = activeHead;
+	struct dd_task_list *prev = activeHead;
+	while ( curr != NULL ){
+
+		while (curr != NULL && curr->task.absolute_deadline > (uint32_t) xTaskGetTickCount()){
+			prev = curr;
+			curr = curr->next;
+		}
+		if(curr->task.release_time != -1 && curr->task.completion_time == -1){
+			prev = curr;
+			curr = curr->next;
+			continue;
+		}
+
+		if(curr == NULL){
+			return;
+		}
+
+		prev->next = curr->next;
+		listInsert(overdueHead, curr->task, 0);
+		printf("Overdue Task: %d at: %d\n", (int)curr->task.task_id, (int) xTaskGetTickCount());
+		curr = prev->next;
+	}
+}
 
 /*-----------------------------------------------------------*/
+
+
+void release_dd_task(uint32_t type, uint32_t task_id, uint32_t execution_time, uint32_t absolute_deadline)
+{
+	struct dd_task new_dd_task;
+
+	new_dd_task.type = type;
+	new_dd_task.task_id = task_id;
+	new_dd_task.execution_time = execution_time;
+	new_dd_task.absolute_deadline = absolute_deadline;
+	new_dd_task.release_time = -1; // to be set later
+	new_dd_task.completion_time = -1; // to be set later
+
+	if(!xQueueSend(release_queue, &new_dd_task, 100)){
+		printf("Failed to send new dd Task to release queue\n");
+	}
+}
+
+
+
 
 void vApplicationMallocFailedHook( void )
 {
@@ -363,47 +497,9 @@ volatile size_t xFreeStackSpace;
 }
 /*-----------------------------------------------------------*/
 
-static void hardwareInit( void )
+static void prvSetupHardware( void )
 {
-	/* Ensure all priority bits are assigned as preemption priority bits. */
+	/* Ensure all priority bits are assigned as preemption priority bits.
+	http://www.freertos.org/RTOS-Cortex-M3-M4.html */
 	NVIC_SetPriorityGrouping( 0 );
-
-	/* Enable clocks for GPIOC */
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
-
-	/* GPIO and SPC init */
-	GPIO_InitTypeDef TrafficLightGPIOStruct;
-	TrafficLightGPIOStruct.GPIO_Mode = GPIO_Mode_OUT;
-	TrafficLightGPIOStruct.GPIO_OType = GPIO_OType_PP;
-	TrafficLightGPIOStruct.GPIO_Pin = TRAFFIC_RED_LIGHT | TRAFFIC_AMBER_LIGHT | TRAFFIC_GREEN_LIGHT | SHIFT_REGISTER_RST | SHIFT_REGISTER_CLK | SHIFT_REGISTER_DATA;
-	TrafficLightGPIOStruct.GPIO_PuPd = GPIO_PuPd_NOPULL;
-	TrafficLightGPIOStruct.GPIO_Speed = GPIO_Speed_50MHz;
-
-	GPIO_Init(GPIOC, &TrafficLightGPIOStruct);
-
-	/* Potentiometer setup via GPIO */
-	GPIO_InitTypeDef PotGPIOStruct;
-
-	PotGPIOStruct.GPIO_Mode = GPIO_Mode_AN;
-	PotGPIOStruct.GPIO_OType = GPIO_OType_OD;
-	PotGPIOStruct.GPIO_Pin = POT_INPUT;
-	PotGPIOStruct.GPIO_PuPd = GPIO_PuPd_NOPULL;
-
-	GPIO_Init(GPIOC, &PotGPIOStruct);
-
-	/* Enable clock for ADC */
-	RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
-
-	/* ADC setup */
-	ADC_InitTypeDef ADCInitStruct;
-	ADCInitStruct.ADC_Resolution = ADC_Resolution_12b;
-	ADCInitStruct.ADC_ScanConvMode = DISABLE;
-	ADCInitStruct.ADC_ContinuousConvMode = ENABLE;
-	ADCInitStruct.ADC_ExternalTrigConv = ADC_ExternalTrigConvEdge_None;
-	ADCInitStruct.ADC_DataAlign = ADC_DataAlign_Right;
-	ADCInitStruct.ADC_ExternalTrigConvEdge=ADC_ExternalTrigConvEdge_None;
-
-	ADC_Init(ADC1, &ADCInitStruct);
-	ADC_Cmd(ADC1, ENABLE);
-	ADC_RegularChannelConfig(ADC1, ADC_Channel_13, 1, ADC_SampleTime_144Cycles);
 }
